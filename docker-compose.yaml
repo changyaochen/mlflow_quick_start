@@ -1,0 +1,15 @@
+version: "3"
+
+services:
+  mlflow:
+    build: .
+    container_name: mlflow
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+      - ~/.aws:/app/.aws
+    entrypoint:
+      /app/entrypoint.sh
