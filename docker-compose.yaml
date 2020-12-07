@@ -1,7 +1,7 @@
 version: "3"
 
 services:
-  mlflow:
+  mlflow-server:
     build: .
     container_name: mlflow
     env_file:
@@ -18,14 +18,15 @@ services:
 
   postgres:
     image: postgres:11.1
+    container_name: mlflow_postgres
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - mlflow-postgres-data:/var/lib/postgresql/data
     ports:
       - ${POSTGRES_PORT:-5432}:5432
 
 volumes:
-  postgres-data:
+  mlflow-postgres-data:

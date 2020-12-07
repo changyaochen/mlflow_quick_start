@@ -4,17 +4,120 @@ import time
 import mlflow
 import joblib
 
-from typing import Tuple
+import numpy as np
+import xgboost as xgb
+
+from abc import ABC
+from typing import Dict, Tuple, Any
 from random import random, randint
 
 from mlflow import log_metric, log_param, log_artifacts
 from sklearn.datasets import make_classification
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 from tensorflow import keras
-from tensorflow.keras import layers, metrics
+from tensorflow.keras import layers
 
-def train_and_log():
+
+class RunBase(ABC):
+    """Abstract class for a run, only for demo purpose."""
+    def __init__(
+        self,
+        experiment_name: str,
+        X: np.ndarray = [],
+        y: np.ndarray = [],
+        data_config: Dict = {},
+        params: Dict = {},
+        **kwargs,
+    ):
+        """A simple base class that handles the data preparation and basic
+        loggings.
+
+        Args:
+            experiment_name (str, optional): Name of the experiment.
+            X (np.ndarray, optional): Input of data for training.
+                Defaults to [].
+            y (np.ndarray, optional): Label of the data for training.
+                Defaults to [].
+            data_config (Dict, optional): Configuration about the data.
+                Defaults to {}.
+            params (Dict, optional): Configuration (parameters) of the model.
+                Defaults to {}.
+        """
+        self.data_config = data_config
+        self.params = params
+        self.experiment_name = experiment_name
+        mlflow.set_experiment(experiment_name=self.experiment_name)
+
+        N = int(0.8 * len(X))
+        self.X_train, self.y_train = X[:N], y[:N]
+        self.X_val, self.y_val = X[N:], y[N:]
+
+    def train(self):
+        with mlflow.start_run() as run:
+            print(f"Running {self.experiment_name}...")
+            for k, v in self.data_config.items():
+                log_param(k, v)
+            # some basic statistic about the data
+            # log_param('n_features', self.X_train.shape[1])
+            log_param('n_training_rows', len(self.X_train))
+            log_param('n_validataion_rows', len(self.X_val))
+            self._fit()
+            print(f'Model trained, with run_id of {run.info.run_id}')
+        return
+
+    def _fit(self):
+        raise NotImplementedError
+
+class RunXGB(RunBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _fit(self):
+        dtrain = xgb.DMatrix(data=self.X_train, label=self.y_train)
+        dval = xgb.DMatrix(data=self.X_val, label=self.y_val)
+
+        self.params.update({
+            'objective': 'binary:logistic',
+            'eval_metric': ['auc', 'logloss'],
+        })
+        self.model = xgb.train(
+            params=self.params,
+            dtrain=dtrain,
+            evals=[(dtrain, 'train'), (dval, 'validation')],
+            early_stopping_rounds=5
+        )
+        return
+
+
+class RunKeras(RunBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _fit(self):
+        mlflow.tensorflow.autolog(every_n_iter=1)
+        keras_model = keras.Sequential([
+            layers.Dense(
+                32,
+                input_dim=self.X_train.shape[1],
+                activation="relu",
+                name="layer1"),
+            layers.Dense(8, activation="relu", name="layer2"),
+            layers.Dense(1, activation='sigmoid', name="layer3"),
+        ])
+        keras_model.compile(
+            optimizer='sgd',
+            loss='binary_crossentropy',
+            metrics=['accuracy', 'AUC'])
+        _ = keras_model.fit(
+            self.X_train,
+            self.y_train,
+            epochs=20,
+            batch_size=128,
+            validation_data=(self.X_val, self.y_val))
+        return
+
+
+def example():
     """A quick ML example, with MLflow."""
     # Create a random dataset for classification and log the parameters
     print('Making data...')
@@ -28,70 +131,37 @@ def train_and_log():
     X, y = make_classification(**data_config)
     print('Data made.')
 
-    experiment_name = 'Logistic regression'
-    experiment = mlflow.get_experiment_by_name(name=experiment_name)
-    if not experiment:
-        experiment_id = mlflow.create_experiment(name=experiment_name)
-        experiment = mlflow.get_experiment(experiment_id)
+    XGBModel_1 = RunXGB(
+        'xgboost logistic regression',
+        X=X,
+        y=y,
+        data_config=data_config,
+        params={
+            'n_estimators': 20,
+            'max_depth': 5,
+            'eta': 1})
+    XGBModel_1.train()
 
-    mlflow.set_experiment(experiment_name=experiment_name)
-    with mlflow.start_run() as run:
-        print("Training...")
-        for k, v in data_config.items():
-            log_param(k, v)
+    XGBModel_2 = RunXGB(
+        'xgboost logistic regression',
+        X=X,
+        y=y,
+        data_config=data_config,
+        params={
+            'n_estimators': 50,
+            'max_depth': 3,
+            'eta': 0.2})
+    XGBModel_2.train()
 
-        # train the model and log the metrics
-        model = LogisticRegression()
-        model.fit(X, y)
-        log_metric('accuracy', accuracy_score(y, model.predict(X)))
-        log_metric('auc', roc_auc_score(y, model.predict_proba(X)[:, 1]))
-
-        # save the model artifact to both local and remote store
-        model_path = os.path.join(
-            'artifacts', experiment.experiment_id, run.info.run_id)
-        if not os.path.exists(model_path):
-            os.makedirs(model_path)
-
-        joblib.dump(model, os.path.join(model_path, 'model.joblib'))
-        log_artifacts(local_dir=model_path)
-        print(f'Model trained, with run_id of {run.info.run_id}')
-
-    # make a keras model
-    experiment_name = 'Keras'
-    experiment = mlflow.get_experiment_by_name(name=experiment_name)
-    if not experiment:
-        experiment_id = mlflow.create_experiment(name=experiment_name)
-        experiment = mlflow.get_experiment(experiment_id)
-
-    mlflow.set_experiment(experiment_name=experiment_name)
-    with mlflow.start_run() as run:
-        keras_model = keras.Sequential([
-            layers.Dense(
-                32,
-                input_dim=X.shape[1],
-                activation="relu",
-                name="layer1"),
-            layers.Dense(8, activation="relu", name="layer2"),
-            layers.Dense(2, activation='softmax', name="layer3"),
-        ])
-        keras_model.compile(
-            optimizer='sgd',
-            loss='binary_crossentropy',
-            metrics=['accuracy'])
-        # autolog your metrics, parameters, and model
-        N = int(0.8 * len(X))
-        X_train, y_train = X[:N], y[:N]
-        X_val, y_val = X[N:], y[N:]
-
-        mlflow.tensorflow.autolog(every_n_iter=1)
-        _ = keras_model.fit(
-            X_train,
-            y_train,
-            epochs=20,
-            batch_size=128,
-            validation_data=(X_val, y_val))
+    KerasModel = RunKeras(
+        'Keras logistic regression',
+        X=X,
+        y=y,
+        data_config=data_config,
+        params={})
+    KerasModel.train()
 
 
 if __name__ == "__main__":
     mlflow.set_tracking_uri('http://localhost:5000')
-    train_and_log()
+    example()
