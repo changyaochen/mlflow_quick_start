@@ -80,6 +80,7 @@ class RunXGB(RunBase):
             'objective': 'binary:logistic',
             'eval_metric': ['auc', 'logloss'],
         })
+        mlflow.xgboost.autolog()
         self.model = xgb.train(
             params=self.params,
             dtrain=dtrain,
